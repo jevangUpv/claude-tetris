@@ -1,9 +1,16 @@
 <!DOCTYPE html>
-<html lang="es">
+<html lang="es" data-theme="dark">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Tetris</title>
+  <!-- Aplica el tema guardado antes de pintar para evitar parpadeo al recargar -->
+  <script>
+    (function () {
+      const saved = localStorage.getItem('tetris-theme');
+      if (saved) document.documentElement.setAttribute('data-theme', saved);
+    })();
+  </script>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -30,6 +37,11 @@
           <canvas id="next-canvas" width="120" height="120"></canvas>
         </div>
 
+        <div class="panel-section">
+          <span class="label">TEMA</span>
+          <button id="theme-btn" class="theme-btn" aria-label="Cambiar tema"></button>
+        </div>
+
         <div class="panel-section controls">
           <span class="label">CONTROLS</span>
           <ul>
@@ -38,6 +50,14 @@
             <li><kbd>↓</kbd> bajar</li>
             <li><kbd>Space</kbd> caída</li>
             <li><kbd>P</kbd> pausa</li>
+          </ul>
+        </div>
+
+        <div class="panel-section controls">
+          <span class="label">ESPECIALES</span>
+          <ul>
+            <li>💣 destruye área 3×3</li>
+            <li>⚡ limpia fila y columna</li>
           </ul>
         </div>
       </aside>

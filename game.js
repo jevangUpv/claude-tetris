@@ -41,8 +41,35 @@ const overlay = document.getElementById('overlay');
 const overlayTitle = document.getElementById('overlay-title');
 const overlayScore = document.getElementById('overlay-score');
 const restartBtn = document.getElementById('restart-btn');
+const themeBtn = document.getElementById('theme-btn');
 
-let board, current, next, score, lines, level, paused, gameOver, lastTime, dropAccum, dropInterval, animId;
+let board, current, next, score, lines, level, paused, gameOver, lastTime, dropAccum, dropInterval, animId, spawnSpecialNext;
+
+// Colores del canvas dependientes del tema; se leen de las variables CSS (única fuente de verdad).
+let gridColor, blockHighlight;
+
+function readThemeColors() {
+  const cs = getComputedStyle(document.documentElement);
+  gridColor = cs.getPropertyValue('--grid-line').trim() || '#22222e';
+  blockHighlight = cs.getPropertyValue('--block-highlight').trim() || 'rgba(255,255,255,0.12)';
+}
+
+function applyThemeButton() {
+  const light = document.documentElement.getAttribute('data-theme') === 'light';
+  themeBtn.textContent = light ? '☀️ Claro' : '🌙 Oscuro';
+}
+
+function toggleTheme() {
+  const light = document.documentElement.getAttribute('data-theme') === 'light';
+  const nextTheme = light ? 'dark' : 'light';
+  document.documentElement.setAttribute('data-theme', nextTheme);
+  localStorage.setItem('tetris-theme', nextTheme);
+  readThemeColors();
+  applyThemeButton();
+  // Repintar de inmediato: el bucle podría estar pausado o parado (game over).
+  if (current) draw();
+  if (next) drawNext();
+}
 
 function createBoard() {
   return Array.from({ length: ROWS }, () => new Array(COLS).fill(0));
@@ -51,7 +78,11 @@ function createBoard() {
 function randomPiece() {
   const type = Math.floor(Math.random() * 8) + 1;
   const shape = PIECES[type].map(row => [...row]);
-  return { type, shape, x: Math.floor(COLS / 2) - Math.floor(shape[0].length / 2), y: 0 };
+  return { type, shape, x: Math.floor(COLS / 2) - Math.floor(shape[0].length / 2), y: 0, special: null };
+}
+
+function randomEffect() {
+  return Math.random() < 0.5 ? 'bomb' : 'lightning';
 }
 
 function collide(shape, ox, oy) {
@@ -106,10 +137,13 @@ function clearLines() {
     }
   }
   if (cleared) {
+    const prev = lines;
     lines += cleared;
     score += (LINE_SCORES[cleared] || 0) * level;
     level = Math.floor(lines / 10) + 1;
     dropInterval = Math.max(100, 1000 - (level - 1) * 90);
+    // Cada 5 líneas, la próxima pieza generada será especial.
+    if (Math.floor(lines / 5) > Math.floor(prev / 5)) spawnSpecialNext = true;
     updateHUD();
   }
 }
@@ -139,6 +173,7 @@ function softDrop() {
 
 function lockPiece() {
   merge();
+  if (current.special) applySpecial(current);
   clearLines();
   spawn();
 }
@@ -146,10 +181,36 @@ function lockPiece() {
 function spawn() {
   current = next;
   next = randomPiece();
+  if (spawnSpecialNext) {
+    next.special = randomEffect();
+    spawnSpecialNext = false;
+  }
   if (collide(current.shape, current.x, current.y)) {
     endGame();
   }
   drawNext();
+}
+
+function applySpecial(piece) {
+  const cx = piece.x + Math.floor(piece.shape[0].length / 2);
+  const cy = piece.y + Math.floor(piece.shape.length / 2);
+  let destroyed = 0;
+  const wipe = (r, c) => {
+    if (r >= 0 && r < ROWS && c >= 0 && c < COLS && board[r][c]) {
+      board[r][c] = 0;
+      destroyed++;
+    }
+  };
+  if (piece.special === 'bomb') {
+    for (let r = cy - 1; r <= cy + 1; r++)
+      for (let c = cx - 1; c <= cx + 1; c++)
+        wipe(r, c);
+  } else { // lightning: fila + columna
+    for (let c = 0; c < COLS; c++) wipe(cy, c);
+    for (let r = 0; r < ROWS; r++) wipe(r, cx);
+  }
+  score += destroyed * 5;
+  updateHUD();
 }
 
 function updateHUD() {
@@ -165,13 +226,20 @@ function drawBlock(context, x, y, colorIndex, size, alpha) {
   context.fillStyle = color;
   context.fillRect(x * size + 1, y * size + 1, size - 2, size - 2);
   // highlight
-  context.fillStyle = 'rgba(255,255,255,0.12)';
+  context.fillStyle = blockHighlight;
   context.fillRect(x * size + 1, y * size + 1, size - 2, 4);
   context.globalAlpha = 1;
 }
 
+function drawSpecialBadge(context, px, py, size, type) {
+  context.font = `${size * 0.9}px serif`;
+  context.textAlign = 'center';
+  context.textBaseline = 'middle';
+  context.fillText(type === 'bomb' ? '💣' : '⚡', px, py);
+}
+
 function drawGrid() {
-  ctx.strokeStyle = '#22222e';
+  ctx.strokeStyle = gridColor;
   ctx.lineWidth = 0.5;
   for (let c = 1; c < COLS; c++) {
     ctx.beginPath();
@@ -207,6 +275,12 @@ function draw() {
   for (let r = 0; r < current.shape.length; r++)
     for (let c = 0; c < current.shape[r].length; c++)
       drawBlock(ctx, current.x + c, current.y + r, current.shape[r][c], BLOCK);
+
+  if (current.special) {
+    const px = (current.x + current.shape[0].length / 2) * BLOCK;
+    const py = (current.y + current.shape.length / 2) * BLOCK;
+    drawSpecialBadge(ctx, px, py, BLOCK, current.special);
+  }
 }
 
 function drawNext() {
@@ -218,6 +292,12 @@ function drawNext() {
   for (let r = 0; r < shape.length; r++)
     for (let c = 0; c < shape[r].length; c++)
       drawBlock(nextCtx, offX + c, offY + r, shape[r][c], NB);
+
+  if (next.special) {
+    const px = (offX + shape[0].length / 2) * NB;
+    const py = (offY + shape.length / 2) * NB;
+    drawSpecialBadge(nextCtx, px, py, NB, next.special);
+  }
 }
 
 function endGame() {
@@ -243,6 +323,7 @@ function togglePause() {
 }
 
 function loop(ts) {
+  if (gameOver || paused) return;
   const dt = ts - lastTime;
   lastTime = ts;
   dropAccum += dt;
@@ -255,7 +336,7 @@ function loop(ts) {
     }
   }
   draw();
-  animId = requestAnimationFrame(loop);
+  if (!gameOver && !paused) animId = requestAnimationFrame(loop);
 }
 
 function init() {
@@ -267,6 +348,7 @@ function init() {
   gameOver = false;
   dropInterval = 1000;
   dropAccum = 0;
+  spawnSpecialNext = false;
   lastTime = performance.now();
   next = randomPiece();
   spawn();
@@ -302,5 +384,8 @@ document.addEventListener('keydown', e => {
 });
 
 restartBtn.addEventListener('click', init);
+themeBtn.addEventListener('click', toggleTheme);
 
+readThemeColors();
+applyThemeButton();
 init();
