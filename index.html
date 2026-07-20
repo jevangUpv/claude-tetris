@@ -1,9 +1,16 @@
 <!DOCTYPE html>
-<html lang="es">
+<html lang="es" data-theme="dark">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Tetris</title>
+  <!-- Aplica el tema guardado antes de pintar para evitar parpadeo al recargar -->
+  <script>
+    (function () {
+      const saved = localStorage.getItem('tetris-theme');
+      if (saved) document.documentElement.setAttribute('data-theme', saved);
+    })();
+  </script>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -26,8 +33,32 @@
         </div>
 
         <div class="panel-section">
+          <span class="label">MEJOR COMBO</span>
+          <span class="value" id="best-combo">0</span>
+        </div>
+        <div class="panel-section">
+          <span class="label">MÁX. LÍNEAS</span>
+          <span class="value" id="max-lines">0</span>
+        </div>
+
+        <div class="panel-section">
           <span class="label">NEXT</span>
           <canvas id="next-canvas" width="120" height="120"></canvas>
+        </div>
+
+        <div class="panel-section">
+          <span class="label">TEMA</span>
+          <button id="theme-btn" class="theme-btn" aria-label="Cambiar tema"></button>
+        </div>
+
+        <div class="panel-section">
+          <span class="label">SKIN</span>
+          <select id="skin-select" class="skin-select" aria-label="Cambiar skin">
+            <option value="retro">Retro</option>
+            <option value="neon">Neon</option>
+            <option value="pastel">Pastel</option>
+            <option value="pixel">Pixel art</option>
+          </select>
         </div>
 
         <div class="panel-section controls">
@@ -40,6 +71,14 @@
             <li><kbd>P</kbd> pausa</li>
           </ul>
         </div>
+
+        <div class="panel-section controls">
+          <span class="label">ESPECIALES</span>
+          <ul>
+            <li>💣 destruye área 3×3</li>
+            <li>⚡ limpia fila y columna</li>
+          </ul>
+        </div>
       </aside>
     </div>
 
@@ -47,7 +86,54 @@
       <div class="overlay-box">
         <p id="overlay-title">GAME OVER</p>
         <p id="overlay-score"></p>
+
+        <!-- Menú de pausa: solo visible al pausar (P / Escape) -->
+        <div id="pause-menu" class="pause-menu hidden">
+          <button id="resume-btn" class="menu-btn">Reanudar</button>
+          <button id="menu-restart-btn" class="menu-btn">Reiniciar</button>
+          <button id="controls-btn" class="menu-btn">Ver controles</button>
+
+          <div id="menu-controls" class="menu-controls hidden">
+            <ul>
+              <li><kbd>←</kbd><kbd>→</kbd> mover</li>
+              <li><kbd>↑</kbd> rotar</li>
+              <li><kbd>↓</kbd> bajar</li>
+              <li><kbd>Space</kbd> caída</li>
+              <li><kbd>P</kbd> pausa</li>
+            </ul>
+          </div>
+
+          <div class="menu-level">
+            <label class="label" for="start-level">NIVEL INICIAL (próxima partida)</label>
+            <select id="start-level" class="menu-select">
+              <option value="1">1</option>
+              <option value="2">2</option>
+              <option value="3">3</option>
+              <option value="4">4</option>
+              <option value="5">5</option>
+              <option value="6">6</option>
+              <option value="7">7</option>
+              <option value="8">8</option>
+              <option value="9">9</option>
+              <option value="10">10</option>
+            </select>
+          </div>
+        </div>
+
+        <p id="overlay-stats" class="hidden"></p>
+
+        <div id="name-entry" class="name-entry hidden">
+          <input id="name-input" type="text" maxlength="12" placeholder="Tu nombre" autocomplete="off" />
+          <button id="save-score-btn">Guardar</button>
+        </div>
+
+        <div id="records-box" class="records">
+          <p class="records-title">RÉCORDS</p>
+          <ol id="records-list" class="records-list"></ol>
+        </div>
+
         <button id="restart-btn">Reiniciar</button>
+        <button id="reset-records-btn" class="secondary-btn">Borrar récords</button>
       </div>
     </div>
   </div>

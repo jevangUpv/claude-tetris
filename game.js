@@ -30,6 +30,25 @@ const PIECES = [
 
 const LINE_SCORES = [0, 100, 300, 500, 800];
 
+// Skins: cada una define su propia paleta (paralela a COLORS, índice 1-8) y su
+// lógica de dibujo en drawBlock. Es un eje independiente del tema claro/oscuro.
+const SKINS = ['retro', 'neon', 'pastel', 'pixel'];
+
+const SKIN_COLORS = {
+  retro: COLORS,
+  neon: [
+    null,
+    '#00f0ff', '#faff00', '#d400ff', '#00ff85',
+    '#ff003c', '#2962ff', '#ff8a00', '#ff00aa',
+  ],
+  pastel: [
+    null,
+    '#a0e7e5', '#faedcb', '#cdb4db', '#b9fbc0',
+    '#ffadad', '#a3c4f3', '#ffd6a5', '#ffc6ff',
+  ],
+  pixel: COLORS,
+};
+
 const canvas = document.getElementById('board');
 const ctx = canvas.getContext('2d');
 const nextCanvas = document.getElementById('next-canvas');
@@ -41,8 +60,80 @@ const overlay = document.getElementById('overlay');
 const overlayTitle = document.getElementById('overlay-title');
 const overlayScore = document.getElementById('overlay-score');
 const restartBtn = document.getElementById('restart-btn');
+const themeBtn = document.getElementById('theme-btn');
+const skinSelect = document.getElementById('skin-select');
+const pauseMenu = document.getElementById('pause-menu');
+const resumeBtn = document.getElementById('resume-btn');
+const menuRestartBtn = document.getElementById('menu-restart-btn');
+const controlsBtn = document.getElementById('controls-btn');
+const menuControls = document.getElementById('menu-controls');
+const startLevelSelect = document.getElementById('start-level');
 
-let board, current, next, score, lines, level, paused, gameOver, lastTime, dropAccum, dropInterval, animId;
+const MAX_START_LEVEL = 10;
+
+const bestComboEl = document.getElementById('best-combo');
+const maxLinesEl = document.getElementById('max-lines');
+const overlayStats = document.getElementById('overlay-stats');
+const nameEntry = document.getElementById('name-entry');
+const nameInput = document.getElementById('name-input');
+const saveScoreBtn = document.getElementById('save-score-btn');
+const recordsBox = document.getElementById('records-box');
+const recordsList = document.getElementById('records-list');
+const resetRecordsBtn = document.getElementById('reset-records-btn');
+
+// combo: cadena actual de bloqueos consecutivos que limpian línea; bestCombo: mayor cadena de la partida.
+// maxLines: mayor nº de líneas limpiadas de una vez en la partida.
+let board, current, next, score, lines, level, paused, gameOver, lastTime, dropAccum, dropInterval, animId, spawnSpecialNext, combo, bestCombo, maxLines, recordSaved;
+
+const RECORDS_KEY = 'tetris-records';
+const MAX_RECORDS = 5;
+
+// Colores del canvas dependientes del tema; se leen de las variables CSS (única fuente de verdad).
+let gridColor, blockHighlight;
+
+// Skin activa y su paleta de colores de pieza. Eje independiente del tema.
+let currentSkin, activeColors;
+
+function setSkin(skin, repaint) {
+  if (!SKINS.includes(skin)) skin = 'retro';
+  currentSkin = skin;
+  activeColors = SKIN_COLORS[skin];
+  localStorage.setItem('tetris-skin', skin);
+  if (skinSelect) skinSelect.value = skin;
+  // Repintar sin recargar: el bucle puede estar pausado o parado (game over).
+  if (repaint) {
+    if (current) draw();
+    if (next) drawNext();
+  }
+}
+
+function initSkin() {
+  const saved = localStorage.getItem('tetris-skin');
+  setSkin(SKINS.includes(saved) ? saved : 'retro', false);
+}
+
+function readThemeColors() {
+  const cs = getComputedStyle(document.documentElement);
+  gridColor = cs.getPropertyValue('--grid-line').trim() || '#22222e';
+  blockHighlight = cs.getPropertyValue('--block-highlight').trim() || 'rgba(255,255,255,0.12)';
+}
+
+function applyThemeButton() {
+  const light = document.documentElement.getAttribute('data-theme') === 'light';
+  themeBtn.textContent = light ? '☀️ Claro' : '🌙 Oscuro';
+}
+
+function toggleTheme() {
+  const light = document.documentElement.getAttribute('data-theme') === 'light';
+  const nextTheme = light ? 'dark' : 'light';
+  document.documentElement.setAttribute('data-theme', nextTheme);
+  localStorage.setItem('tetris-theme', nextTheme);
+  readThemeColors();
+  applyThemeButton();
+  // Repintar de inmediato: el bucle podría estar pausado o parado (game over).
+  if (current) draw();
+  if (next) drawNext();
+}
 
 function createBoard() {
   return Array.from({ length: ROWS }, () => new Array(COLS).fill(0));
@@ -51,7 +142,11 @@ function createBoard() {
 function randomPiece() {
   const type = Math.floor(Math.random() * 8) + 1;
   const shape = PIECES[type].map(row => [...row]);
-  return { type, shape, x: Math.floor(COLS / 2) - Math.floor(shape[0].length / 2), y: 0 };
+  return { type, shape, x: Math.floor(COLS / 2) - Math.floor(shape[0].length / 2), y: 0, special: null };
+}
+
+function randomEffect() {
+  return Math.random() < 0.5 ? 'bomb' : 'lightning';
 }
 
 function collide(shape, ox, oy) {
@@ -106,12 +201,17 @@ function clearLines() {
     }
   }
   if (cleared) {
+    const prev = lines;
     lines += cleared;
     score += (LINE_SCORES[cleared] || 0) * level;
     level = Math.floor(lines / 10) + 1;
     dropInterval = Math.max(100, 1000 - (level - 1) * 90);
+    if (cleared > maxLines) maxLines = cleared;
+    // Cada 5 líneas, la próxima pieza generada será especial.
+    if (Math.floor(lines / 5) > Math.floor(prev / 5)) spawnSpecialNext = true;
     updateHUD();
   }
+  return cleared;
 }
 
 function ghostY() {
@@ -139,39 +239,139 @@ function softDrop() {
 
 function lockPiece() {
   merge();
-  clearLines();
+  if (current.special) applySpecial(current);
+  const cleared = clearLines();
+  // El combo crece con cada bloqueo que limpia ≥1 línea; se rompe si no limpia ninguna.
+  if (cleared > 0) {
+    combo++;
+    if (combo > bestCombo) bestCombo = combo;
+    updateHUD();
+  } else {
+    combo = 0;
+  }
   spawn();
 }
 
 function spawn() {
   current = next;
   next = randomPiece();
+  if (spawnSpecialNext) {
+    next.special = randomEffect();
+    spawnSpecialNext = false;
+  }
   if (collide(current.shape, current.x, current.y)) {
     endGame();
   }
   drawNext();
 }
 
+function applySpecial(piece) {
+  const cx = piece.x + Math.floor(piece.shape[0].length / 2);
+  const cy = piece.y + Math.floor(piece.shape.length / 2);
+  let destroyed = 0;
+  const wipe = (r, c) => {
+    if (r >= 0 && r < ROWS && c >= 0 && c < COLS && board[r][c]) {
+      board[r][c] = 0;
+      destroyed++;
+    }
+  };
+  if (piece.special === 'bomb') {
+    for (let r = cy - 1; r <= cy + 1; r++)
+      for (let c = cx - 1; c <= cx + 1; c++)
+        wipe(r, c);
+  } else { // lightning: fila + columna
+    for (let c = 0; c < COLS; c++) wipe(cy, c);
+    for (let r = 0; r < ROWS; r++) wipe(r, cx);
+  }
+  score += destroyed * 5;
+  updateHUD();
+}
+
 function updateHUD() {
   scoreEl.textContent = score.toLocaleString();
   linesEl.textContent = lines;
   levelEl.textContent = level;
+  bestComboEl.textContent = bestCombo;
+  maxLinesEl.textContent = maxLines;
+}
+
+// Traza un rectángulo con esquinas redondeadas (para la skin pastel).
+function roundRectPath(context, x, y, w, h, r) {
+  r = Math.min(r, w / 2, h / 2);
+  context.beginPath();
+  context.moveTo(x + r, y);
+  context.arcTo(x + w, y, x + w, y + h, r);
+  context.arcTo(x + w, y + h, x, y + h, r);
+  context.arcTo(x, y + h, x, y, r);
+  context.arcTo(x, y, x + w, y, r);
+  context.closePath();
+}
+
+// Fondo del canvas según skin: neon fuerza negro; el resto deja ver el board-bg del tema.
+function paintBg(context, w, h) {
+  if (currentSkin === 'neon') {
+    context.fillStyle = '#000000';
+    context.fillRect(0, 0, w, h);
+  } else {
+    context.clearRect(0, 0, w, h);
+  }
 }
 
 function drawBlock(context, x, y, colorIndex, size, alpha) {
   if (!colorIndex) return;
-  const color = COLORS[colorIndex];
+  const color = activeColors[colorIndex];
+  const px = x * size + 1;
+  const py = y * size + 1;
+  const s = size - 2;
   context.globalAlpha = alpha ?? 1;
-  context.fillStyle = color;
-  context.fillRect(x * size + 1, y * size + 1, size - 2, size - 2);
-  // highlight
-  context.fillStyle = 'rgba(255,255,255,0.12)';
-  context.fillRect(x * size + 1, y * size + 1, size - 2, 4);
+
+  if (currentSkin === 'neon') {
+    // Efecto glow con sombra del propio color.
+    context.shadowBlur = size * 0.5;
+    context.shadowColor = color;
+    context.fillStyle = color;
+    context.fillRect(px, py, s, s);
+    context.shadowBlur = 0;
+  } else if (currentSkin === 'pastel') {
+    // Bloques suaves con esquinas redondeadas.
+    context.fillStyle = color;
+    roundRectPath(context, px, py, s, s, size * 0.28);
+    context.fill();
+    context.fillStyle = blockHighlight;
+    roundRectPath(context, px, py, s, s * 0.4, size * 0.28);
+    context.fill();
+  } else if (currentSkin === 'pixel') {
+    // Bloque plano + bisel de textura pixel-art (luz arriba/izq, sombra abajo/der).
+    context.fillStyle = color;
+    context.fillRect(px, py, s, s);
+    const b = Math.max(2, Math.floor(size * 0.15));
+    context.fillStyle = 'rgba(255,255,255,0.35)';
+    context.fillRect(px, py, s, b);
+    context.fillRect(px, py, b, s);
+    context.fillStyle = 'rgba(0,0,0,0.35)';
+    context.fillRect(px, py + s - b, s, b);
+    context.fillRect(px + s - b, py, b, s);
+  } else {
+    // Retro: cuadrado plano con highlight superior (estilo original).
+    context.fillStyle = color;
+    context.fillRect(px, py, s, s);
+    context.fillStyle = blockHighlight;
+    context.fillRect(px, py, s, 4);
+  }
+
   context.globalAlpha = 1;
 }
 
+function drawSpecialBadge(context, px, py, size, type) {
+  context.font = `${size * 0.9}px serif`;
+  context.textAlign = 'center';
+  context.textBaseline = 'middle';
+  context.fillText(type === 'bomb' ? '💣' : '⚡', px, py);
+}
+
 function drawGrid() {
-  ctx.strokeStyle = '#22222e';
+  // En neon el fondo es negro fijo: rejilla tenue para que no destaque sobre el tema.
+  ctx.strokeStyle = currentSkin === 'neon' ? 'rgba(255,255,255,0.06)' : gridColor;
   ctx.lineWidth = 0.5;
   for (let c = 1; c < COLS; c++) {
     ctx.beginPath();
@@ -188,7 +388,7 @@ function drawGrid() {
 }
 
 function draw() {
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  paintBg(ctx, canvas.width, canvas.height);
   drawGrid();
 
   // board
@@ -207,17 +407,130 @@ function draw() {
   for (let r = 0; r < current.shape.length; r++)
     for (let c = 0; c < current.shape[r].length; c++)
       drawBlock(ctx, current.x + c, current.y + r, current.shape[r][c], BLOCK);
+
+  if (current.special) {
+    const px = (current.x + current.shape[0].length / 2) * BLOCK;
+    const py = (current.y + current.shape.length / 2) * BLOCK;
+    drawSpecialBadge(ctx, px, py, BLOCK, current.special);
+  }
 }
 
 function drawNext() {
   const NB = 30;
-  nextCtx.clearRect(0, 0, nextCanvas.width, nextCanvas.height);
+  paintBg(nextCtx, nextCanvas.width, nextCanvas.height);
   const shape = next.shape;
   const offX = Math.floor((4 - shape[0].length) / 2);
   const offY = Math.floor((4 - shape.length) / 2);
   for (let r = 0; r < shape.length; r++)
     for (let c = 0; c < shape[r].length; c++)
       drawBlock(nextCtx, offX + c, offY + r, shape[r][c], NB);
+
+  if (next.special) {
+    const px = (offX + shape[0].length / 2) * NB;
+    const py = (offY + shape.length / 2) * NB;
+    drawSpecialBadge(nextCtx, px, py, NB, next.special);
+  }
+}
+
+// ---- Tabla de récords (localStorage) ----
+function loadRecords() {
+  try {
+    const raw = localStorage.getItem(RECORDS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter(r => r && typeof r.score === 'number')
+      .map(r => ({
+        name: String(r.name || 'ANÓNIMO').slice(0, 12),
+        score: r.score,
+        lines: typeof r.lines === 'number' ? r.lines : 0,
+        combo: typeof r.combo === 'number' ? r.combo : 0,
+      }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, MAX_RECORDS);
+  } catch (e) {
+    return [];
+  }
+}
+
+function saveRecords(records) {
+  localStorage.setItem(RECORDS_KEY, JSON.stringify(records));
+}
+
+// ¿Entra la puntuación en el top 5?
+function qualifies(value) {
+  if (value <= 0) return false;
+  const records = loadRecords();
+  if (records.length < MAX_RECORDS) return true;
+  return value > records[records.length - 1].score;
+}
+
+// Inserta una entrada y devuelve su posición final (o -1 si no entró en el top).
+function addRecord(entry) {
+  const records = loadRecords();
+  records.push(entry);
+  records.sort((a, b) => b.score - a.score);
+  const trimmed = records.slice(0, MAX_RECORDS);
+  saveRecords(trimmed);
+  return trimmed.indexOf(entry);
+}
+
+// Pinta la lista de récords; resalta la fila highlightIndex (usar -1 para ninguna).
+function renderRecords(highlightIndex) {
+  const records = loadRecords();
+  recordsList.innerHTML = '';
+  if (!records.length) {
+    const li = document.createElement('li');
+    li.className = 'record-empty';
+    li.textContent = 'Sin récords todavía';
+    recordsList.appendChild(li);
+    return;
+  }
+  records.forEach((r, i) => {
+    const li = document.createElement('li');
+    if (i === highlightIndex) li.className = 'record-highlight';
+    const rank = document.createElement('span');
+    rank.className = 'record-rank';
+    rank.textContent = `${i + 1}.`;
+    const name = document.createElement('span');
+    name.className = 'record-name';
+    name.textContent = r.name; // textContent evita inyección de HTML
+    const sc = document.createElement('span');
+    sc.className = 'record-score';
+    sc.textContent = r.score.toLocaleString();
+    li.append(rank, name, sc);
+    recordsList.appendChild(li);
+  });
+}
+
+function saveScore() {
+  if (recordSaved) return;
+  const name = (nameInput.value.trim() || 'ANÓNIMO').slice(0, 12);
+  const index = addRecord({ name, score, lines, combo: bestCombo });
+  recordSaved = true;
+  nameEntry.classList.add('hidden');
+  renderRecords(index);
+}
+
+function resetRecords() {
+  localStorage.removeItem(RECORDS_KEY);
+  renderRecords(-1);
+}
+
+// Pantalla de inicio: muestra los récords y espera a que el jugador pulse Jugar.
+function showStartScreen() {
+  // Sin partida activa: bloquea los controles (los guardas comprueban gameOver).
+  gameOver = true;
+  overlayTitle.textContent = 'TETRIS';
+  overlayScore.textContent = 'Pulsa Jugar para empezar';
+  overlayStats.classList.add('hidden');
+  nameEntry.classList.add('hidden');
+  recordsBox.classList.remove('hidden');
+  resetRecordsBtn.classList.remove('hidden');
+  restartBtn.textContent = 'Jugar';
+  renderRecords(-1);
+  overlay.classList.remove('hidden');
 }
 
 function endGame() {
@@ -225,24 +538,60 @@ function endGame() {
   cancelAnimationFrame(animId);
   overlayTitle.textContent = 'GAME OVER';
   overlayScore.textContent = `Puntuación: ${score.toLocaleString()}`;
-  overlay.classList.remove('hidden');
+  // Ocultar el menú de pausa y mostrar el botón de reinicio + UI de records.
+  pauseMenu.classList.add('hidden');
+  restartBtn.classList.remove('hidden');
+  overlayStats.textContent = `Mejor combo: ${bestCombo} · Máx. líneas de una vez: ${maxLines}`;
+  overlayStats.classList.remove('hidden');
+  recordsBox.classList.remove('hidden');
+  resetRecordsBtn.classList.remove('hidden');
+  restartBtn.textContent = 'Reiniciar';
+  recordSaved = false;
+  if (qualifies(score)) {
+    nameEntry.classList.remove('hidden');
+    nameInput.value = '';
+    renderRecords(-1);
+    overlay.classList.remove('hidden');
+    nameInput.focus();
+  } else {
+    nameEntry.classList.add('hidden');
+    renderRecords(-1);
+    overlay.classList.remove('hidden');
+  }
+}
+
+// Nivel con el que arranca la próxima partida (persistido en localStorage).
+function readStartLevel() {
+  const saved = parseInt(localStorage.getItem('tetris-start-level'), 10);
+  return Number.isInteger(saved) && saved >= 1 && saved <= MAX_START_LEVEL ? saved : 1;
 }
 
 function togglePause() {
   if (gameOver) return;
   paused = !paused;
   if (!paused) {
+    pauseMenu.classList.add('hidden');
+    overlay.classList.add('hidden');
     lastTime = performance.now();
     loop(lastTime);
   } else {
     cancelAnimationFrame(animId);
     overlayTitle.textContent = 'PAUSA';
     overlayScore.textContent = '';
+    // Mostrar el menú de pausa y ocultar el botón de reinicio + la UI de records del game over.
+    restartBtn.classList.add('hidden');
+    menuControls.classList.add('hidden');
+    pauseMenu.classList.remove('hidden');
+    overlayStats.classList.add('hidden');
+    nameEntry.classList.add('hidden');
+    recordsBox.classList.add('hidden');
+    resetRecordsBtn.classList.add('hidden');
     overlay.classList.remove('hidden');
   }
 }
 
 function loop(ts) {
+  if (gameOver || paused) return;
   const dt = ts - lastTime;
   lastTime = ts;
   dropAccum += dt;
@@ -255,29 +604,38 @@ function loop(ts) {
     }
   }
   draw();
-  animId = requestAnimationFrame(loop);
+  if (!gameOver && !paused) animId = requestAnimationFrame(loop);
 }
 
 function init() {
   board = createBoard();
   score = 0;
   lines = 0;
-  level = 1;
+  level = readStartLevel();
   paused = false;
   gameOver = false;
-  dropInterval = 1000;
+  dropInterval = Math.max(100, 1000 - (level - 1) * 90);
   dropAccum = 0;
+  spawnSpecialNext = false;
+  combo = 0;
+  bestCombo = 0;
+  maxLines = 0;
+  recordSaved = false;
   lastTime = performance.now();
   next = randomPiece();
   spawn();
   updateHUD();
+  pauseMenu.classList.add('hidden');
+  restartBtn.classList.remove('hidden');
   overlay.classList.add('hidden');
   cancelAnimationFrame(animId);
   animId = requestAnimationFrame(loop);
 }
 
 document.addEventListener('keydown', e => {
-  if (e.code === 'KeyP') { togglePause(); return; }
+  // P/Escape abren y cierran el menú de pausa (única navegación por teclado).
+  if (e.code === 'KeyP' || e.code === 'Escape') { togglePause(); return; }
+  // Con el menú abierto (o game over) se ignoran los inputs de pieza.
   if (paused || gameOver) return;
   switch (e.code) {
     case 'ArrowLeft':
@@ -302,5 +660,30 @@ document.addEventListener('keydown', e => {
 });
 
 restartBtn.addEventListener('click', init);
+themeBtn.addEventListener('click', toggleTheme);
+skinSelect.addEventListener('change', e => setSkin(e.target.value, true));
 
-init();
+// Menú de pausa.
+resumeBtn.addEventListener('click', togglePause);
+menuRestartBtn.addEventListener('click', init);
+controlsBtn.addEventListener('click', () => menuControls.classList.toggle('hidden'));
+startLevelSelect.addEventListener('change', () => {
+  localStorage.setItem('tetris-start-level', startLevelSelect.value);
+});
+
+// Records.
+saveScoreBtn.addEventListener('click', saveScore);
+resetRecordsBtn.addEventListener('click', resetRecords);
+nameInput.addEventListener('keydown', e => {
+  if (e.code === 'Enter') {
+    e.preventDefault();
+    saveScore();
+  }
+});
+
+readThemeColors();
+applyThemeButton();
+initSkin();
+// Reflejar el nivel inicial persistido en el selector.
+startLevelSelect.value = String(readStartLevel());
+showStartScreen();
