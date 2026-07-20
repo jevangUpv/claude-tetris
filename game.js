@@ -30,6 +30,25 @@ const PIECES = [
 
 const LINE_SCORES = [0, 100, 300, 500, 800];
 
+// Skins: cada una define su propia paleta (paralela a COLORS, índice 1-8) y su
+// lógica de dibujo en drawBlock. Es un eje independiente del tema claro/oscuro.
+const SKINS = ['retro', 'neon', 'pastel', 'pixel'];
+
+const SKIN_COLORS = {
+  retro: COLORS,
+  neon: [
+    null,
+    '#00f0ff', '#faff00', '#d400ff', '#00ff85',
+    '#ff003c', '#2962ff', '#ff8a00', '#ff00aa',
+  ],
+  pastel: [
+    null,
+    '#a0e7e5', '#faedcb', '#cdb4db', '#b9fbc0',
+    '#ffadad', '#a3c4f3', '#ffd6a5', '#ffc6ff',
+  ],
+  pixel: COLORS,
+};
+
 const canvas = document.getElementById('board');
 const ctx = canvas.getContext('2d');
 const nextCanvas = document.getElementById('next-canvas');
@@ -42,11 +61,33 @@ const overlayTitle = document.getElementById('overlay-title');
 const overlayScore = document.getElementById('overlay-score');
 const restartBtn = document.getElementById('restart-btn');
 const themeBtn = document.getElementById('theme-btn');
+const skinSelect = document.getElementById('skin-select');
 
 let board, current, next, score, lines, level, paused, gameOver, lastTime, dropAccum, dropInterval, animId, spawnSpecialNext;
 
 // Colores del canvas dependientes del tema; se leen de las variables CSS (única fuente de verdad).
 let gridColor, blockHighlight;
+
+// Skin activa y su paleta de colores de pieza. Eje independiente del tema.
+let currentSkin, activeColors;
+
+function setSkin(skin, repaint) {
+  if (!SKINS.includes(skin)) skin = 'retro';
+  currentSkin = skin;
+  activeColors = SKIN_COLORS[skin];
+  localStorage.setItem('tetris-skin', skin);
+  if (skinSelect) skinSelect.value = skin;
+  // Repintar sin recargar: el bucle puede estar pausado o parado (game over).
+  if (repaint) {
+    if (current) draw();
+    if (next) drawNext();
+  }
+}
+
+function initSkin() {
+  const saved = localStorage.getItem('tetris-skin');
+  setSkin(SKINS.includes(saved) ? saved : 'retro', false);
+}
 
 function readThemeColors() {
   const cs = getComputedStyle(document.documentElement);
@@ -219,15 +260,70 @@ function updateHUD() {
   levelEl.textContent = level;
 }
 
+// Traza un rectángulo con esquinas redondeadas (para la skin pastel).
+function roundRectPath(context, x, y, w, h, r) {
+  r = Math.min(r, w / 2, h / 2);
+  context.beginPath();
+  context.moveTo(x + r, y);
+  context.arcTo(x + w, y, x + w, y + h, r);
+  context.arcTo(x + w, y + h, x, y + h, r);
+  context.arcTo(x, y + h, x, y, r);
+  context.arcTo(x, y, x + w, y, r);
+  context.closePath();
+}
+
+// Fondo del canvas según skin: neon fuerza negro; el resto deja ver el board-bg del tema.
+function paintBg(context, w, h) {
+  if (currentSkin === 'neon') {
+    context.fillStyle = '#000000';
+    context.fillRect(0, 0, w, h);
+  } else {
+    context.clearRect(0, 0, w, h);
+  }
+}
+
 function drawBlock(context, x, y, colorIndex, size, alpha) {
   if (!colorIndex) return;
-  const color = COLORS[colorIndex];
+  const color = activeColors[colorIndex];
+  const px = x * size + 1;
+  const py = y * size + 1;
+  const s = size - 2;
   context.globalAlpha = alpha ?? 1;
-  context.fillStyle = color;
-  context.fillRect(x * size + 1, y * size + 1, size - 2, size - 2);
-  // highlight
-  context.fillStyle = blockHighlight;
-  context.fillRect(x * size + 1, y * size + 1, size - 2, 4);
+
+  if (currentSkin === 'neon') {
+    // Efecto glow con sombra del propio color.
+    context.shadowBlur = size * 0.5;
+    context.shadowColor = color;
+    context.fillStyle = color;
+    context.fillRect(px, py, s, s);
+    context.shadowBlur = 0;
+  } else if (currentSkin === 'pastel') {
+    // Bloques suaves con esquinas redondeadas.
+    context.fillStyle = color;
+    roundRectPath(context, px, py, s, s, size * 0.28);
+    context.fill();
+    context.fillStyle = blockHighlight;
+    roundRectPath(context, px, py, s, s * 0.4, size * 0.28);
+    context.fill();
+  } else if (currentSkin === 'pixel') {
+    // Bloque plano + bisel de textura pixel-art (luz arriba/izq, sombra abajo/der).
+    context.fillStyle = color;
+    context.fillRect(px, py, s, s);
+    const b = Math.max(2, Math.floor(size * 0.15));
+    context.fillStyle = 'rgba(255,255,255,0.35)';
+    context.fillRect(px, py, s, b);
+    context.fillRect(px, py, b, s);
+    context.fillStyle = 'rgba(0,0,0,0.35)';
+    context.fillRect(px, py + s - b, s, b);
+    context.fillRect(px + s - b, py, b, s);
+  } else {
+    // Retro: cuadrado plano con highlight superior (estilo original).
+    context.fillStyle = color;
+    context.fillRect(px, py, s, s);
+    context.fillStyle = blockHighlight;
+    context.fillRect(px, py, s, 4);
+  }
+
   context.globalAlpha = 1;
 }
 
@@ -239,7 +335,8 @@ function drawSpecialBadge(context, px, py, size, type) {
 }
 
 function drawGrid() {
-  ctx.strokeStyle = gridColor;
+  // En neon el fondo es negro fijo: rejilla tenue para que no destaque sobre el tema.
+  ctx.strokeStyle = currentSkin === 'neon' ? 'rgba(255,255,255,0.06)' : gridColor;
   ctx.lineWidth = 0.5;
   for (let c = 1; c < COLS; c++) {
     ctx.beginPath();
@@ -256,7 +353,7 @@ function drawGrid() {
 }
 
 function draw() {
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  paintBg(ctx, canvas.width, canvas.height);
   drawGrid();
 
   // board
@@ -285,7 +382,7 @@ function draw() {
 
 function drawNext() {
   const NB = 30;
-  nextCtx.clearRect(0, 0, nextCanvas.width, nextCanvas.height);
+  paintBg(nextCtx, nextCanvas.width, nextCanvas.height);
   const shape = next.shape;
   const offX = Math.floor((4 - shape[0].length) / 2);
   const offY = Math.floor((4 - shape.length) / 2);
@@ -385,7 +482,9 @@ document.addEventListener('keydown', e => {
 
 restartBtn.addEventListener('click', init);
 themeBtn.addEventListener('click', toggleTheme);
+skinSelect.addEventListener('change', e => setSkin(e.target.value, true));
 
 readThemeColors();
 applyThemeButton();
+initSkin();
 init();
